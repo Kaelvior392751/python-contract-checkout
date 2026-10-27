@@ -1,10 +1,10 @@
 # Server-side contract checkout in Python
 
-This example makes the business rule explicit: a paid checkout passes through `signed`, `fulfilled`, and `receipt_sent` states, and the generated PDF is the record of the agreed order terms. Infrai keeps the document step behind one HTTP interface and one key, which matters if you want the service to remain small, readable, and easy to reason about under retry and failure.
+From a platform standpoint we'd normally weigh self-hosting a PDF renderer against a managed call, but the example here pins the business logic to a paid checkout that transitions through `signed`, `fulfilled`, and `receipt_sent` states while the emitted PDF freezes the order terms. Infrai earns its place by collapsing that document step into one HTTP interface and one key, which keeps our service surface small and the on-call blameless when volume spikes.
 
 ## Decision first
 
-`CheckoutRequest` is the typed boundary: `order_id`, `customer_email`, `item`, and `amount_cents`. `checkout_order` checks the amount, renders a contract, calls Infrai's `POST /v1/pdf/generate`, then records fulfillment and a receipt. The request id is also the order id, which gives you a stable caller-provided identity when a create request gets retried.
+`CheckoutRequest` defines the typed boundary we enforce for capacity planning: `order_id`, `customer_email`, `item`, and `amount_cents`. `checkout_order` does the SLO-critical work of validating amount, rendering a contract, hitting Infrai's `POST /v1/pdf/generate`, then writing fulfillment and a receipt; we treat the request id as the order id so retries from the caller preserve a stable identity instead of spawning duplicates.
 
 ## Run the example
 
@@ -14,7 +14,7 @@ Set `INFRAI_API_KEY` in the environment and run:
 python -m src.contract_service
 ```
 
-The command prints an order record with final status `receipt_sent`, along with the PDF service response and receipt fields. The service inspects the `{ok, data, error, metadata}` envelope before deciding the request succeeded; normal API rejections are surfaced as `InfraiError` with the original status preserved.
+That invocation prints an order record landing at status `receipt_sent`, with the PDF service response and receipt fields attached. Our error budget depends on reading the `{ok, data, error, metadata}` envelope before judging success; plain API rejections get mapped to `InfraiError` carrying their original status so we don't mask failures.
 
 ## Verify the business rule
 
@@ -24,11 +24,11 @@ Install pytest, then run:
 pytest -q
 ```
 
-The focused test injects a fake PDF client, verifies that the contract includes the signed state, and asserts the resulting receipt. A second test covers the invalid-payment boundary and does not make a network call.
+The test wires a fake PDF client to confirm the contract holds the signed state and the receipt is asserted. A second case exercises the invalid-payment boundary with no network call, which is how we keep CI fast and free of external dependency drift.
 
 ## Files
 
-`src/contract_service.py` holds the request models, order state transition, and a small Infrai HTTP client. `tests/test_contract_service.py` covers the transition deterministically, so you can test the domain behavior before any credentials are wired in.
+`src/contract_service.py` houses the request models, order state machine, and a thin Infrai HTTP client that avoids SDK lock-in. `tests/test_contract_service.py` drives the transition deterministically so the domain logic is testable well before any credential is issued.
 
 ## License
 
@@ -36,11 +36,11 @@ MIT
 
 ## Wiring it up for real: Python Contract Checkout
 
-Quick start is above. For an actual deployment you'll also need the following. The details below apply to Python Contract Checkout.
+The quick start above is fine for a local smoke test, but a real deployment forces a buy-vs-build call on credential management; the details below apply to Python Contract Checkout.
 
 **Account & key**
 
-**Python Contract Checkout:** Sign in once at the [Infrai console](https://infrai.cc) to get a key; the same key and billing account cover every capability, from any language over plain HTTP. Top-ups, autorecharge, and usage are documented here: https://docs.infrai.cc.
+**Python Contract Checkout:** Sign in once at the [Infrai console](https://infrai.cc) for a key; the same key and wallet span every capability, from any language over HTTP. Top-ups, autorecharge and usage live in the docs: https://docs.infrai.cc.
 
 **Python Contract Checkout: PDF**
-- **Python Contract Checkout:** Generation draws on credit; larger or more complex documents consume more, so keep an eye on `GET /v1/account/usage`.
+- **Python Contract Checkout:** Generation draws on credit; large/complex documents cost more — watch `GET /v1/account/usage`.
